@@ -1,207 +1,129 @@
-import keras
-from keras.layers import Dense, Conv2D, BatchNormalization, Activation
-from keras.layers import AveragePooling2D, Input, Flatten
-from keras.optimizers import Adam
-from keras.callbacks import ModelCheckpoint, LearningRateScheduler
-from keras.callbacks import ReduceLROnPlateau
-from keras.preprocessing.image import ImageDataGenerator
-from keras.regularizers import l2
-from keras import backend as K
-from keras.models import Model
-from keras.datasets import cifar10
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+
+import torchvision
+
+from resnet import *
+
+import matplotlib.pyplot as plt
 import numpy as np
+
 import os
 
+def make_label_list(root):
+    dir_list = os.listdir(root)
+    classes = list()
+    for i, dir in enumerate(dir_list, 0):
+        if i != 0:
+            #print(dir)
+            classes.append(dir)
 
-# Training parameters
-batch_size = 32  # orig paper trained all networks with batch_size=128
-epochs = 200
-data_augmentation = True
-num_classes = 10
+    return classes
+# functions to show an image
+def imshow(img):
+    img = img / 2 + 0.5     # unnormalize
+    npimg = img.numpy()
+    plt.imshow(np.transpose(npimg, (1, 2, 0)))
+    plt.show()
 
-# Subtracting pixel mean improves accuracy
-subtract_pixel_mean = True
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+print(device)
 
-# Model parameter
-# ----------------------------------------------------------------------------
-#           |      | 200-epoch | Orig Paper| 200-epoch | Orig Paper| sec/epoch
-# Model     |  n   | ResNet v1 | ResNet v1 | ResNet v2 | ResNet v2 | GTX1080Ti
-#           |v1(v2)| %Accuracy | %Accuracy | %Accuracy | %Accuracy | v1 (v2)
-# ----------------------------------------------------------------------------
-# ResNet20  | 3 (2)| 92.16     | 91.25     | -----     | -----     | 35 (---)
-# ResNet32  | 5(NA)| 92.46     | 92.49     | NA        | NA        | 50 ( NA)
-# ResNet44  | 7(NA)| 92.50     | 92.83     | NA        | NA        | 70 ( NA)
-# ResNet56  | 9 (6)| 92.71     | 93.03     | 93.01     | NA        | 90 (100)
-# ResNet110 |18(12)| 92.65     | 93.39+-.16| 93.15     | 93.63     | 165(180)
-# ResNet164 |27(18)| -----     | 94.07     | -----     | 94.54     | ---(---)
-# ResNet1001| (111)| -----     | 92.39     | -----     | 95.08+-.14| ---(---)
-# ---------------------------------------------------------------------------
-n = 3
+classes = make_label_list(
+    root="/media/disk1/STUFF/eddible_ones/data/datasets/dataset-test/")
+print("We have {} classes".format(len(classes)))
 
-# Model version
-# Orig paper: version = 1 (ResNet v1), Improved ResNet: version = 2 (ResNet v2)
+transformations = torchvision.transforms.Compose([
+    # you can add other transformations in this list
+    torchvision.transforms.Resize(size=(224, 224)),
+    torchvision.transforms.ToTensor()
+])
 
-# Computed depth from supplied model parameter n
-depth = n * 6 + 2
+train_dataset = torchvision.datasets.ImageFolder(
+    root="/media/disk1/STUFF/eddible_ones/data/datasets/dataset",
+    transform=transformations)
 
-# Define the data loader here
-input_shape = [224, 224, 3]
+test_dataset = torchvision.datasets.ImageFolder(
+    root="/media/disk1/STUFF/eddible_ones/data/datasets/dataset-test/",
+    transform=transformations)
+#print(train_dataset)
+trainloader = torch.utils.data.DataLoader(train_dataset, batch_size=4,
+                                          shuffle=True, num_workers=2)
 
-# Learning rate scheduler
-def lr_scheduler(epoch):
-    """Learning Rate Schedule
+testloader = torch.utils.data.DataLoader(test_dataset, batch_size=4,
+                                          shuffle=True, num_workers=2)
+'''
+class Net(nn.Module):
+    def __init__(self):
+        super(Net, self).__init__()
+        self.conv1 = nn.Conv2d(3, 6, 5)
+        self.pool = nn.MaxPool2d(2, 2)
+        #self.conv2 = nn.Conv2d(6, 16, 5)
+        #self.conv3 = nn.Conv2d(16, 32, 5)
+        self.fc1 = nn.Linear(6 * 110 * 110, 120)
+        self.fc2 = nn.Linear(120, 84)
+        self.fc3 = nn.Linear(84, 62)
 
-    Learning rate is scheduled to be reduced after 80, 120, 160, 180 epochs.
-    Called automatically every epoch as part of callbacks during training.
+    def forward(self, x):
+        x = self.pool(F.relu(self.conv1(x)))
+        #x = self.pool(F.relu(self.conv2(x)))
+        #x = self.pool(F.relu(self.conv3(x)))
+        #print(x.size())
+        x = x.view(-1, 6 * 110 * 110)
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
 
-    # Arguments
-        epoch (int): The number of epochs
 
-    # Returns
-        lr (float32): learning rate
-    """
-    lr = 1e-3
-    if epoch > 180:
-        lr *= 0.5e-3
-    elif epoch > 160:
-        lr *= 1e-3
-    elif epoch > 120:
-        lr *= 1e-2
-    elif epoch > 80:
-        lr *= 1e-1
-    print('Learning rate: ', lr)
-    return lr
+net = Net().to(device)
+'''
+net = resnet50().to(device)
 
-def resnet_layer(
-    inputs,
-    num_filters=16,
-    kernel_size=3,
-    strides=1,
-    activation='relu',
-    batch_normalization=True,
-    conv_first=True):
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
 
-    """2D Convolution-Batch Normalization-Activation stack builder
+for epoch in range(2):  # loop over the dataset multiple times
 
-    # Arguments
-        inputs (tensor): input tensor from input image or previous layer
-        num_filters (int): Conv2D number of filters
-        kernel_size (int): Conv2D square kernel dimensions
-        strides (int): Conv2D square stride dimensions
-        activation (string): activation name
-        batch_normalization (bool): whether to include batch normalization
-        conv_first (bool): conv-bn-activation (True) or
-            bn-activation-conv (False)
+    running_loss = 0.0
+    for i, data in enumerate(trainloader, 0):
+        #print(data)
+        # get the inputs; data is a list of [inputs, labels]
+        inputs, labels = data
+        #print(labels)
+        # zero the parameter gradients
+        optimizer.zero_grad()
 
-    # Returns
-        x (tensor): tensor as input to the next layer
-    """
-    conv = Conv2D(
-        num_filters,
-        kernel_size=kernel_size,
-        strides=strides,
-        padding='same',
-        kernel_initializer='he_normal',
-        kernel_regularizer=l2(1e-4))
+        # forward + backward + optimize
+        outputs = net(inputs.to(device))
+        loss = criterion(outputs, labels.to(device))
+        loss.backward()
+        optimizer.step()
 
-    x = inputs
-    if conv_first:
-        x = conv(x)
-        if batch_normalization:
-            x = BatchNormalization()(x)
-        if activation is not None:
-            x = Activation(activation)(x)
-    else:
-        if batch_normalization:
-            x = BatchNormalization()(x)
-        if activation is not None:
-            x = Activation(activation)(x)
-        x = conv(x)
+        # print statistics
+        running_loss += loss.item()
 
-    return x
+    print('Loss: {}'.format(running_loss / (i+1)))
 
-def resnet_v1(input_shape, depth, num_classes=8):
-    """ResNet Version 1 Model builder [a]
+print('Finished Training')
 
-    Stacks of 2 x (3 x 3) Conv2D-BN-ReLU
-    Last ReLU is after the shortcut connection.
-    At the beginning of each stage, the feature map size is halved (downsampled)
-    by a convolutional layer with strides=2, while the number of filters is
-    doubled. Within each stage, the layers have the same number filters and the
-    same number of filters.
-    Features maps sizes:
-    stage 0: 32x32, 16
-    stage 1: 16x16, 32
-    stage 2:  8x8,  64
-    The Number of parameters is approx the same as Table 6 of [a]:
-    ResNet20 0.27M
-    ResNet32 0.46M
-    ResNet44 0.66M
-    ResNet56 0.85M
-    ResNet110 1.7M
+PATH = '/media/disk1/STUFF/eddible_ones/model_library/resnet50/model.pth'
+torch.save(net.state_dict(), PATH)
 
-    # Arguments
-        input_shape (tensor): shape of input image tensor
-        depth (int): number of core convolutional layers
-        num_classes (int): number of classes (CIFAR10 has 10)
+dataiter = iter(testloader)
+images, labels = dataiter.next()
 
-    # Returns
-        model (Model): Keras model instance
-    """
-    if (depth - 2) % 6 != 0:
-        raise ValueError('depth should be 6n+2 (eg 20, 32, 44 in [a])')
+net = resnet50()
+net.load_state_dict(torch.load(PATH))
 
-    # Start the model definition
-    num_filters = 16
-    num_res_blocks = int((depth - 2) / 6)
+outputs = net(images)
 
-    inputs = Input(shape=input_shape)
-    x = resnet_layer(inputs)
-    # instantiate the stack of residual units
-    for stack in range(3):
-        for res_block in range(num_res_blocks):
-            strides = 1
-            if stack > 0 and res_block == 0: # first layer not the fist stack
-                strides = 2 # Downsample the input from second stack onwards
-            y = resnet_layer(inputs=x,
-                             num_filters=num_filters,
-                             strides=strides)
-            y = resnet_layer(inputs=y,
-                             num_filters=num_filters,
-                             activation=None)
-            if stack > 0 and res_block == 0: # first layer not the fist stack
-                # linear projection residual shortcut connection to match
-                # changed dims
-                x = resnet_layer(
-                                inputs=x,
-                                num_filters=num_filters,
-                                kernel_size=1,
-                                strides=strides,
-                                activation=None,
-                                batch_normalization=False)
-            x = keras.layers.add([x, y])
-            x = Activation('relu')(x)
+_, predicted = torch.max(outputs, 1)
 
-        num_filters *= 2
-
-    # Add classifier on the top
-    # v1 does not use BN after last shortcut connection-ReLU
-    x = AveragePooling2D(pool_size=8)(x)
-    y = Flatten()(x)
-    outputs = Dense(
-                num_classes,
-                activation='softmax',
-                kernel_initializer='he_normal')(y)
-
-    # Instantiate the model
-    model = Model(inputs=inputs, outputs=outputs)
-    return model
-
-model = resnet_v1(input_shape= input_shape, depth=depth)
-
-model.compile(
-            loss='categorical_crossentropy',
-            optimizer=Adam(learning_rate=lr_scheduler(0)),
-            metrics=['accuracy'])
-
-model.summary()
+print('Predicted: ', ' '.join('%5s' % classes[predicted[j]]
+                              for j in range(4)))
+#print images
+imshow(torchvision.utils.make_grid(images))
+print('GroundTruth: ', ' '.join('%5s' % classes[labels[j]] for j in range(4)))
