@@ -1,11 +1,12 @@
 import torch
 import torch.nn as nn
+import numpy as np
 
 def get_same_padding(image_size, filter_size, stride):
     padding_x = (image_size[0] * stride - 1 - image_size[0] + filter_size) / 2
     padding_y = (image_size[1] * stride - 1 - image_size[1] + filter_size) / 2
 
-    return [padding_x, padding_y]
+    return (np.int(padding_x), np.int(padding_y))
 
 class M1Cell(nn.Module):
     def __init__(self, image_size, kernels, output_channels, stride):
@@ -15,11 +16,11 @@ class M1Cell(nn.Module):
         kernel_3, kernel_5, kernel_7 = kernels
 
         # padding for 3x3 filter
-        padding_3 = get_same_padding(image_size, kernel_1, stride)
+        padding_3 = get_same_padding(image_size, kernel_3, stride)
         # padding for 5x5 filter
-        padding_5 = get_same_padding(image_size, kernel_2, stride)
+        padding_5 = get_same_padding(image_size, kernel_5, stride)
         # padding for 7x7 filter
-        padding_7 = get_same_padding(image_size, kernel_3, stride)
+        padding_7 = get_same_padding(image_size, kernel_7, stride)
         # filters
         # A1 * x layer
         self.conv_1 = nn.Conv2d(output_channels, output_channels,
@@ -61,7 +62,7 @@ class M1Cell(nn.Module):
         self.conv_a_3 = nn.Conv2d(output_channels, output_channels,
             kernel_size=kernel_7, padding=padding_7)
 
-    def call(self, inputs, state):
+    def forward(self, inputs, state):
         xx = state * state
         xxx = xx * state
         #print(state.get_shape())
