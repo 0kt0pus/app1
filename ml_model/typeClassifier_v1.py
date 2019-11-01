@@ -12,6 +12,23 @@ import numpy as np
 
 import os
 
+def accuracy(model, X, Y):
+  model = model.eval()  # NOTE
+
+  #X = T.Tensor(data_x)
+  #Y = T.LongTensor(data_y)
+  oupt = model(X.to(device))
+  (max_vals, arg_maxs) = torch.max(oupt.data, dim=1)
+  #print(max_vals)
+  #print(arg_maxs)
+  #print(Y)
+  # arg_maxs is tensor of indices [0, 1, 0, 2, 1, 1 . . ]
+  num_correct = torch.sum(Y.to(device)==arg_maxs)
+  acc = (num_correct * 100.0 / Y.size(0))
+
+  model = model.train()  # NOTE
+  return acc.item()  # percentage format
+
 def make_label_list(root):
     dir_list = os.listdir(root)
     classes = list()
@@ -80,13 +97,14 @@ class Net(nn.Module):
 
 net = Net().to(device)
 '''
-net = resnet50().to(device)
+net = resnet18().to(device)
 
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
+step = 5
 
-for epoch in range(2):  # loop over the dataset multiple times
-
+for epoch in range(100):  # loop over the dataset multiple times
+    print('Epoch: {}'.format(epoch+1))
     running_loss = 0.0
     for i, data in enumerate(trainloader, 0):
         #print(data)
@@ -107,23 +125,38 @@ for epoch in range(2):  # loop over the dataset multiple times
 
     print('Loss: {}'.format(running_loss / (i+1)))
 
+    # Perform the evaluation of the model here
+    avg_accuracy = list()
+    for j, test_data in enumerate(testloader, 0):
+        tes_inputs, tes_labels = test_data
+        acc = accuracy(net, tes_inputs, tes_labels)
+        avg_accuracy.append(acc)
+    print("Test accuracy: {}".format(
+        np.mean(
+            np.array(
+                avg_accuracy
+            ))))
+    print('')
+
 print('Finished Training')
 
-PATH = '/media/disk1/STUFF/eddible_ones/model_library/resnet50/model.pth'
+PATH = '/media/disk1/STUFF/eddible_ones/model_library/resnet18/model.pth'
 torch.save(net.state_dict(), PATH)
 
 dataiter = iter(testloader)
 images, labels = dataiter.next()
 
-net = resnet50()
+net = resnet18()
 net.load_state_dict(torch.load(PATH))
 
 outputs = net(images)
 
 _, predicted = torch.max(outputs, 1)
 
-print('Predicted: ', ' '.join('%5s' % classes[predicted[j]]
+print('Predicted: \n', ' '.join('%5s\n' % classes[predicted[j]]
                               for j in range(4)))
 #print images
 imshow(torchvision.utils.make_grid(images))
-print('GroundTruth: ', ' '.join('%5s' % classes[labels[j]] for j in range(4)))
+print(predicted)
+print(labels)
+print('GroundTruth: \n', ' '.join('%5s\n' % classes[labels[j]] for j in range(4)))
